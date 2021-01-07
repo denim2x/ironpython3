@@ -699,7 +699,7 @@ namespace IronPython.Compiler.Ast {
 
         /// <summary>
         /// Rewrites the tree for performing lookups against globals instead of being bound
-        /// against the optimized scope.  This is used if the user compiles optimied code and then
+        /// against the optimized scope.  This is used if the user compiles optimized code and then
         /// runs it against a different scope.
         /// </summary>
         internal PythonAst MakeLookupCode() {
@@ -752,7 +752,11 @@ namespace IronPython.Compiler.Ast {
                     return base.VisitExtension(new GeneratorExpression((FunctionDefinition)VisitScope(generator.Function), generator.Iterable));
                 }
 
-                // if (node is ListComprehension comp) {
+                // if (node is Comprehension comprehension) {
+                //     return VisitComprehension(comprehension);
+                // }
+
+                // if (node is    ListComprehension    comp) {
                 //     var compScope = (FunctionDefinition) VisitScope(func(comp));
                 //     return base.VisitExtension(new SelfExAnonymousFunc(compScope));
                 // }
@@ -766,6 +770,7 @@ namespace IronPython.Compiler.Ast {
                     return base.VisitExtension(new DictionaryComprehension1((FunctionDefinition)VisitScope(dictcomp.Function)));
                 }
 
+                // update the global get/set/raw gets variables
                 if (node is PythonGlobalVariableExpression global) {
                     return new LookupGlobalVariable(
                         _curScope == null ? PythonAst._globalContext : _curScope.LocalContext,
@@ -869,6 +874,22 @@ namespace IronPython.Compiler.Ast {
                     _curScope = prevScope;
                 }
                 return newScope;
+            }
+
+            private MSAst.Expression VisitComprehension(Comprehension comprehension) {
+                var newScope = (ComprehensionScope)comprehension.Scope.CopyForRewrite();
+                newScope.Parent = _curScope;
+                var newComprehension = comprehension.CopyForRewrite(newScope);
+
+                ScopeStatement prevScope = _curScope;
+                try {
+                    // rewrite the comprehension in a new scope
+                    _curScope = newScope;
+
+                    return base.VisitExtension(newComprehension);
+                } finally {
+                    _curScope = prevScope;
+                }
             }
         }
 

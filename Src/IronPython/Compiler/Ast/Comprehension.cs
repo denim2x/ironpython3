@@ -60,7 +60,63 @@ namespace IronPython.Compiler.Ast {
                 res
             );
         }
+
+        internal ComprehensionScope Scope { get; private protected set; }
+
+        internal Comprehension CopyForRewrite(ComprehensionScope scope) {
+            var newComprehension = (Comprehension)MemberwiseClone();
+            newComprehension.Scope = scope;
+            newComprehension.Parent = scope.Parent;
+            return newComprehension;
+        }
     }
+
+    public sealed class ListComprehension : Comprehension {
+        private readonly ComprehensionIterator[] _iterators;
+
+        public ListComprehension(Expression item, ComprehensionIterator[] iterators) {
+            Item = item;
+            _iterators = iterators;
+            Scope = new ComprehensionScope(this);
+        }
+
+        public Expression Item { get; }
+
+        public override IList<ComprehensionIterator> Iterators => _iterators;
+
+        protected override MSAst.ParameterExpression MakeParameter()
+            => Ast.Parameter(typeof(PythonList), "list_comprehension_list");
+
+        protected override MethodInfo Factory() => AstMethods.MakeEmptyList;
+
+        public override Ast Reduce() => Scope.AddVariables(base.Reduce());
+
+        protected override Ast Body(MSAst.ParameterExpression res) {
+            return GlobalParent.AddDebugInfo(
+                Ast.Call(
+                    AstMethods.ListAddForComprehension,
+                    res,
+                    AstUtils.Convert(Item, typeof(object))
+                ),
+                Item.Span
+            );
+        }
+
+        public override string NodeName => "list comprehension";
+
+        public override void Walk(PythonWalker walker) {
+            if (walker.Walk(this)) {
+                Item?.Walk(walker);
+                if (_iterators != null) {
+                    foreach (ComprehensionIterator ci in _iterators) {
+                        ci.Walk(walker);
+                    }
+                }
+            }
+            walker.PostWalk(this);
+        }
+    }
+
     public sealed class SetComprehension : Comprehension {
         private readonly ComprehensionIterator[] _iterators;
 
@@ -105,8 +161,6 @@ namespace IronPython.Compiler.Ast {
             }
             walker.PostWalk(this);
         }
-
-        internal ComprehensionScope Scope { get; }
     }
 
     public sealed class DictionaryComprehension : Comprehension {
@@ -158,8 +212,6 @@ namespace IronPython.Compiler.Ast {
             }
             walker.PostWalk(this);
         }
-
-        internal ComprehensionScope Scope { get; }
     }
 
     /// <summary>
@@ -167,10 +219,10 @@ namespace IronPython.Compiler.Ast {
     /// this doesn't actually show up in the AST hierarchy and instead hangs off the comprehension expression.
     /// </summary>
     internal class ComprehensionScope : ScopeStatement {
-        private readonly Expression _comprehension;
+        private readonly Comprehension _comprehension;
         private static readonly MSAst.ParameterExpression _compContext = Ast.Parameter(typeof(CodeContext), "$compContext");
 
-        public ComprehensionScope(Expression comprehension) {
+        public ComprehensionScope(Comprehension comprehension) {
             _comprehension = comprehension;
         }
 
@@ -180,12 +232,34 @@ namespace IronPython.Compiler.Ast {
             } else if (variable.Scope == this) {
                 return false;
             }
-            return _comprehension.Parent.ExposesLocalVariable(variable);
+            return Parent.ExposesLocalVariable(variable);
         }
 
         internal override MSAst.Expression/*!*/ GetParentClosureTuple() {
             Debug.Assert(NeedsLocalContext);
-            return MSAst.Expression.Call(null, typeof(PythonOps).GetMethod(nameof(PythonOps.GetClosureTupleFromContext)), _comprehension.Parent.LocalContext);
+            return MSAst.Expression.Call(null, typeof(PythonOps).GetMethod(nameof(PythonOps.GetClosureTupleFromContext)), Parent.LocalContext);
+        }
+
+        internal override bool TryBindOuter(ScopeStatement from, PythonReference reference, out PythonVariable variable) {
+            ContainsNestedFreeVariables = true;
+            if (TryGetVariable(reference.Name, out variable)) {
+                Debug.Assert(variable.Kind != VariableKind.Nonlocal, "there should be no nonlocals in a comprehension");
+                variable.AccessedInNestedScope = true;
+
+                if (variable.Kind == VariableKind.Local || variable.Kind == VariableKind.Parameter) {
+                    from.AddFreeVariable(variable, true);
+
+                    for (ScopeStatement scope = from.Parent; scope != this; scope = scope.Parent) {
+                        scope.AddFreeVariable(variable, false);
+                    }
+
+                    AddCellVariable(variable);
+                } else {
+                    from.AddReferencedGlobal(reference.Name);
+                }
+                return true;
+            }
+            return false;
         }
 
         internal override bool TryBindOuter(ScopeStatement from, PythonReference reference, out PythonVariable variable) {
@@ -221,7 +295,7 @@ namespace IronPython.Compiler.Ast {
             }
 
             // then bind in our parent scope
-            return _comprehension.Parent.BindReference(binder, reference);
+            return Parent.BindReference(binder, reference);
         }
 
         internal override Ast GetVariableExpression(PythonVariable variable) {
@@ -233,13 +307,15 @@ namespace IronPython.Compiler.Ast {
                 return expr;
             }
 
-            return _comprehension.Parent.GetVariableExpression(variable);
+            return Parent.GetVariableExpression(variable);
         }
 
         internal override Microsoft.Scripting.Ast.LightLambdaExpression GetLambda()
             => throw new NotImplementedException();
 
-        public override void Walk(PythonWalker walker) => _comprehension.Walk(walker);
+        public override void Walk(PythonWalker walker) {
+            _comprehension.Walk(walker);
+        }
 
         internal override Ast LocalContext {
             get {
@@ -247,7 +323,7 @@ namespace IronPython.Compiler.Ast {
                     return _compContext;
                 }
 
-                return _comprehension.Parent.LocalContext;
+                return Parent.LocalContext;
             }
         }
 
@@ -263,7 +339,7 @@ namespace IronPython.Compiler.Ast {
             CreateVariables(locals, body);
 
             if (localContext != null) {
-                var createLocal = CreateLocalContext(_comprehension.Parent.LocalContext);
+                var createLocal = CreateLocalContext(Parent.LocalContext);
                 body.Add(Ast.Assign(_compContext, createLocal));
             }
 

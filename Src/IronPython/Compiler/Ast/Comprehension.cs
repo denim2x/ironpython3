@@ -70,6 +70,11 @@ namespace IronPython.Compiler.Ast {
             _iterators = iterators;
             Scope = new ComprehensionScope(this);
         }
+        public ListComprehension(Expression item, ComprehensionIterator[] iterators, ScopeStatement scope) {
+            Item = item;
+            _iterators = iterators;
+            Scope = (ComprehensionScope) scope;
+        }
 
         public Expression Item { get; }
 
@@ -240,6 +245,7 @@ namespace IronPython.Compiler.Ast {
         internal override bool TryBindOuter(ScopeStatement from, PythonReference reference, out PythonVariable variable) {
             ContainsNestedFreeVariables = true;
             if (TryGetVariable(reference.Name, out variable)) {
+            //if (TryGetVariable(reference.Name, out variable) && variable.Kind != VariableKind.Nonlocal) {
                 Debug.Assert(variable.Kind != VariableKind.Nonlocal, "there should be no nonlocals in a comprehension");
                 variable.AccessedInNestedScope = true;
 
